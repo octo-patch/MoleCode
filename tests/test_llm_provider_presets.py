@@ -115,39 +115,37 @@ def test_no_provider_uses_openai_default():
 
 def test_minimax_uses_current_default_model():
     client = LLMClient(api_key="dummy", provider="minimax")
-    assert client.model == "MiniMax-M3"
+    assert client.model == "MiniMax-M3.1-Flash"
     assert PROVIDER_MODELS["minimax"]["models"] == (
+        "MiniMax-M3.1-Flash",
         "MiniMax-M3",
-        "MiniMax-M2.7",
     )
 
 
 def test_minimax_model_metadata_is_current():
     metadata = PROVIDER_MODELS["minimax"]["metadata"]
-    assert metadata == {
-        "MiniMax-M3": {
-            "context_window": 1_000_000,
-            "pricing_usd_per_million_tokens": {
-                "input": 0.6,
-                "output": 2.4,
-                "cache_read": 0.12,
-                "cache_write": None,
-            },
-            "input_modalities": ("text", "image", "video"),
-            "thinking": ("adaptive", "disabled"),
-        },
-        "MiniMax-M2.7": {
-            "context_window": 204_800,
-            "pricing_usd_per_million_tokens": {
-                "input": 0.3,
-                "output": 1.2,
-                "cache_read": 0.06,
-                "cache_write": 0.375,
-            },
-            "input_modalities": ("text",),
-            "thinking": ("always_on",),
-        },
+    assert tuple(metadata) == ("MiniMax-M3.1-Flash", "MiniMax-M3")
+    flash = metadata["MiniMax-M3.1-Flash"]
+    assert flash["context_window"] == 1_000_000
+    assert flash["max_output_tokens"] == 524_288
+    assert flash["pricing_usd_per_million_tokens"] == {
+        "input": 0.15, "output": 0.6, "cache_read": 0.015, "cache_write": None,
     }
+    assert flash["thinking"] == ("adaptive",)
+    assert flash["effort"] == ("low", "medium", "high", "xhigh", "max")
+    assert flash["default_effort"] == "max"
+    m3 = metadata["MiniMax-M3"]
+    assert m3["pricing_usd_per_million_tokens"] == {
+        "input": 0.3, "output": 1.2, "cache_read": 0.06, "cache_write": None,
+    }
+    assert m3["pricing_usd_per_million_tokens_above_512k"] == {
+        "input": 0.6, "output": 2.4, "cache_read": 0.12, "cache_write": None,
+    }
+    assert m3["priority_price_multiplier"] == 1.5
+    assert m3["thinking"] == ("adaptive", "disabled")
+    assert m3["input_modalities"] == flash["input_modalities"] == (
+        "text", "image", "video",
+    )
 
 
 def test_provider_via_environment():
@@ -242,7 +240,7 @@ def test_anthropic_transport_uses_regional_endpoint(region, base_url):
         transport="anthropic",
     )
     assert client.base_url == base_url
-    assert client.model == "MiniMax-M3"
+    assert client.model == "MiniMax-M3.1-Flash"
 
 
 def test_anthropic_messages_request_and_response():
@@ -277,7 +275,7 @@ def test_anthropic_messages_request_and_response():
     assert captured["url"] == "https://api.minimax.io/anthropic/v1/messages"
     assert captured["headers"]["X-api-key"] == "dummy"
     assert captured["payload"] == {
-        "model": "MiniMax-M3",
+        "model": "MiniMax-M3.1-Flash",
         "messages": [
             {
                 "role": "user",
@@ -350,6 +348,114 @@ def test_anthropic_base_url_environment_wins_over_preset():
     ):
         client = LLMClient(api_key="dummy")
     assert client.base_url == "https://anthropic.example.com"
+
+
+@pytest.mark.parametrize("transport", ["openai", "anthropic"])
+@pytest.mark.parametrize("region,host", [
+    ("global_en", "api.minimax.io"), ("cn_zh", "api.minimaxi.com"),
+])
+@pytest.mark.parametrize("source,expected", [
+    ("default", "MiniMax-M3.1-Flash"),
+    ("constructor", "MiniMax-M3"),
+    ("environment", "MiniMax-M2.7"),
+    ("request", "custom-model"),
+])
+def test_serialized_model_resolution(monkeypatch, transport, region, host,
+                                     source, expected):
+    kwargs = {"api_key": "dummy", "transport": transport,
+              "provider": "minimax", "region": region}
+    request_kwargs = {}
+    if source == "constructor":
+        monkeypatch.setenv("MOLECODE_MODEL", "saved-model")
+        kwargs["model"] = expected
+    elif source == "environment":
+        monkeypatch.setenv("MOLECODE_MODEL", expected)
+    elif source == "request":
+        kwargs["model"] = "MiniMax-M2.7"
+        request_kwargs["model"] = expected
+    client = LLMClient(**kwargs)
+    captured = {}
+    response = ({"choices": [{"message": {"content": "ok"}}]}
+                if transport == "openai"
+                else {"content": [{"type": "text", "text": "ok"}]})
+    with mock.patch.object(llm_mod.urllib.request, "urlopen",
+                           _capture_urlopen(captured, response)):
+        assert client.chat("hi", **request_kwargs) == "ok"
+    suffix = "/v1/chat/completions" if transport == "openai" else "/anthropic/v1/messages"
+    assert captured["url"] == "https://" + host + suffix
+    assert captured["payload"]["model"] == expected
+    for field in ("thinking", "reasoning_effort", "output_config",
+                  "service_tier", "reasoning_split"):
+        assert field not in captured["payload"]
+
+
+@pytest.mark.parametrize("transport", ["openai", "anthropic"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+def test_flash_thinking_and_effort_reach_transport(transport, effort):
+    client = LLMClient(api_key="dummy", provider="minimax", transport=transport)
+    options = {"thinking": {"type": "adaptive"}}
+    if transport == "openai":
+        options["reasoning_effort"] = effort
+    else:
+        options["output_config"] = {"effort": effort}
+    captured = {}
+    response = ({"choices": [{"message": {"content": "ok"}}]}
+                if transport == "openai"
+                else {"content": [{"type": "text", "text": "ok"}]})
+    with mock.patch.object(llm_mod.urllib.request, "urlopen",
+                           _capture_urlopen(captured, response)):
+        assert client.chat("hi", **options) == "ok"
+    assert captured["payload"]["model"] == "MiniMax-M3.1-Flash"
+    for field, value in options.items():
+        assert captured["payload"][field] == value
+
+
+@pytest.mark.parametrize("transport", ["openai", "anthropic"])
+def test_saved_model_and_custom_endpoint_keep_request_options(transport):
+    client = LLMClient(api_key="dummy", provider="minimax", transport=transport,
+                       base_url="https://custom.example.com", model="MiniMax-M3")
+    captured = {}
+    response = ({"choices": [{"message": {"content": "ok"}}]}
+                if transport == "openai"
+                else {"content": [{"type": "text", "text": "ok"}]})
+    with mock.patch.object(llm_mod.urllib.request, "urlopen",
+                           _capture_urlopen(captured, response)):
+        assert client.chat("hi", thinking={"type": "disabled"},
+                           service_tier="priority") == "ok"
+    assert captured["url"].startswith("https://custom.example.com/")
+    assert captured["payload"]["model"] == "MiniMax-M3"
+    assert captured["payload"]["thinking"] == {"type": "disabled"}
+    assert captured["payload"]["service_tier"] == "priority"
+
+
+@pytest.mark.parametrize("transport", ["openai", "anthropic"])
+def test_call_llm_uses_environment_provider_default(monkeypatch, transport):
+    monkeypatch.setenv("MOLECODE_PROVIDER", "minimax")
+    monkeypatch.setenv("MOLECODE_TRANSPORT", transport)
+    monkeypatch.setenv("MOLECODE_REGION", "cn_zh")
+    captured = {}
+    response = ({"choices": [{"message": {"content": "ok"}}]}
+                if transport == "openai"
+                else {"content": [{"type": "text", "text": "ok"}]})
+    with mock.patch.object(llm_mod.urllib.request, "urlopen",
+                           _capture_urlopen(captured, response)):
+        assert llm_mod.call_llm("system", "hi", api_key="dummy") == "ok"
+    assert captured["payload"]["model"] == "MiniMax-M3.1-Flash"
+    assert captured["url"].startswith("https://api.minimaxi.com/")
+
+
+def test_non_minimax_default_payload_is_unchanged():
+    client = LLMClient(api_key="dummy")
+    captured = {}
+    response = {"choices": [{"message": {"content": "ok"}}]}
+    with mock.patch.object(llm_mod.urllib.request, "urlopen",
+                           _capture_urlopen(captured, response)):
+        assert client.chat("hi") == "ok"
+    assert captured["payload"] == {
+        "model": llm_mod.DEFAULT_MODEL,
+        "messages": [{"role": "user", "content": "hi"}],
+        "temperature": 0.0,
+    }
 
 
 def test_invalid_transport_is_rejected():

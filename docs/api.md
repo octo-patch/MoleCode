@@ -191,6 +191,27 @@ and `MOLECODE_TRANSPORT`. Anthropic transport also recognizes
 `images=[...]` (file paths or URLs) to a vision model for OCSR (molecule image ->
 MoleCode).
 
+The MiniMax catalog lists `MiniMax-M3.1-Flash` first and `MiniMax-M3` second.
+An explicit constructor model, `MOLECODE_MODEL`, or per-request model override
+is preserved, including legacy and custom IDs. Flash uses adaptive thinking
+and maximum effort by default on the service. Pass `reasoning_effort="high"`
+for Chat Completions or `output_config={"effort": "high"}` for Messages through
+`chat` / `complete`; accepted levels are `low`, `medium`, `high`, `xhigh`, `max`.
+Flash does not support disabled thinking, `none` effort, `service_tier`, or
+`reasoning_split=False`. These extra request parameters are passed through;
+the client does not rewrite explicit caller settings. M3 defaults to thinking
+on for Chat Completions and off for Messages, and ignores effort.
+
+Metadata uses standard USD prices per million tokens. M3's base prices apply
+up to 512k input tokens; `pricing_usd_per_million_tokens_above_512k` records its
+long-context prices, and priority pricing is 1.5 times standard. Unknown cache
+write prices are `None`.
+
+Sources: [models](https://platform.minimax.io/docs/guides/models-intro),
+[pricing](https://platform.minimax.io/docs/pricing/overview),
+[Chat Completions](https://platform.minimax.io/docs/api-reference/text-openai-api),
+[Messages](https://platform.minimax.io/docs/api-reference/text-anthropic-api).
+
 ```python
 from molecode import LLMClient
 from molecode.prompts import MOLECULE_SYSTEM_PROMPT, MARKUSH_SYSTEM_PROMPT
@@ -198,7 +219,7 @@ from molecode.prompts import MOLECULE_SYSTEM_PROMPT, MARKUSH_SYSTEM_PROMPT
 client = LLMClient(api_key="sk-...", base_url="https://api.openai.com/v1", model="gpt-4o")
 
 minimax = LLMClient(api_key="...", provider="minimax", region="global_en",
-                    transport="anthropic", model="MiniMax-M3")
+                    transport="anthropic")  # defaults to MiniMax-M3.1-Flash
 
 # text task
 client.chat("How many carbons are in this molecule? ...", system=MOLECULE_SYSTEM_PROMPT)

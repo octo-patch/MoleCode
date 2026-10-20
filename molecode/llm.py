@@ -37,10 +37,9 @@ hard-coding URLs::
 
     from molecode.llm import LLMClient, PROVIDER_PRESETS
 
-    client = LLMClient(api_key="...", provider="minimax", region="global_en",
-                       model="MiniMax-M3")
+    client = LLMClient(api_key="...", provider="minimax", region="global_en")
     client = LLMClient(api_key="...", provider="minimax", region="cn_zh",
-                       transport="anthropic", model="MiniMax-M2.7")
+                       transport="anthropic", model="MiniMax-M3")
 
 A preset resolves ``base_url`` from ``provider`` + ``region`` + ``transport``.
 An explicit ``base_url`` always wins, followed by the matching environment
@@ -76,30 +75,41 @@ PROVIDER_PRESETS: Dict[str, Dict[str, Dict[str, str]]] = {
 
 PROVIDER_MODELS: Dict[str, Dict[str, Any]] = {
     "minimax": {
-        "default": "MiniMax-M3",
-        "models": ("MiniMax-M3", "MiniMax-M2.7"),
+        "default": "MiniMax-M3.1-Flash",
+        "models": ("MiniMax-M3.1-Flash", "MiniMax-M3"),
         "metadata": {
+            "MiniMax-M3.1-Flash": {
+                "context_window": 1_000_000,
+                "max_output_tokens": 524_288,
+                "pricing_usd_per_million_tokens": {
+                    "input": 0.15,
+                    "output": 0.6,
+                    "cache_read": 0.015,
+                    "cache_write": None,
+                },
+                "input_modalities": ("text", "image", "video"),
+                "thinking": ("adaptive",),
+                "effort": ("low", "medium", "high", "xhigh", "max"),
+                "default_effort": "max",
+            },
             "MiniMax-M3": {
                 "context_window": 1_000_000,
+                # Standard pricing for requests up to 512k input tokens.
                 "pricing_usd_per_million_tokens": {
+                    "input": 0.3,
+                    "output": 1.2,
+                    "cache_read": 0.06,
+                    "cache_write": None,
+                },
+                "pricing_usd_per_million_tokens_above_512k": {
                     "input": 0.6,
                     "output": 2.4,
                     "cache_read": 0.12,
                     "cache_write": None,
                 },
+                "priority_price_multiplier": 1.5,
                 "input_modalities": ("text", "image", "video"),
                 "thinking": ("adaptive", "disabled"),
-            },
-            "MiniMax-M2.7": {
-                "context_window": 204_800,
-                "pricing_usd_per_million_tokens": {
-                    "input": 0.3,
-                    "output": 1.2,
-                    "cache_read": 0.06,
-                    "cache_write": 0.375,
-                },
-                "input_modalities": ("text",),
-                "thinking": ("always_on",),
             },
         },
     },
